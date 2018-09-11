@@ -19,6 +19,8 @@ const TraceEventDecoder = require('./format/trace-event-decoder.js')
 const ProcessStatDecoder = require('./format/process-stat-decoder.js')
 const RenderRecommendations = require('./recommendations/index.js')
 const minifyStream = require('minify-stream')
+const v8 = require('v8')
+const HEAP_MAX = v8.getHeapStatistics().heap_size_limit
 
 class ClinicDoctor extends events.EventEmitter {
   constructor (settings = {}) {
@@ -164,6 +166,21 @@ class ClinicDoctor extends events.EventEmitter {
       })
     )
 
+    const hasFreeMemory = () => {
+      const used = process.memoryUsage().heapTotal / HEAP_MAX
+      /* istanbul ignore next: difficult to test */
+      if (used < 0.5) {
+        systemInfoReader.destroy()
+        traceEventReader.destroy()
+        processStatReader.destroy()
+        analysisStringified.destroy()
+        this.emit('truncate')
+        this.emit('warning', 'Truncating input data due to memory constraits')
+      }
+    }
+
+    const checkHeapInterval = setInterval(hasFreeMemory, 500)
+
     const dataFile = streamTemplate`
       {
         "traceEvent": ${traceEventStringify},
@@ -240,7 +257,10 @@ class ClinicDoctor extends events.EventEmitter {
     pump(
       outputFile,
       fs.createWriteStream(outputFilename),
-      callback
+      function (err) {
+        clearInterval(checkHeapInterval)
+        callback(err)
+      }
     )
   }
 }
